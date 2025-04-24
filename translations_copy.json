@@ -1,6 +1,8 @@
 {
     "en": {
         "help_description":"Show help message",
+        "reset_description":"Reset the conversation. Optionally pass high-level instructions (e.g. /reset You are a helpful assistant)",
+        "image_description":"Generate image from prompt (e.g. /image cat)",
         "tts_description":"Generate speech from text (e.g. /tts my house)",
         "stats_description":"Get your current usage statistics",
         "resend_description":"Resend the latest message",
@@ -637,6 +639,8 @@
     "ru": {
         "help_description":"Показать справочное сообщение",
         "reset_description":"Перезагрузить разговор. По желанию передай общие инструкции (например, /reset ты полезный помощник)",
+        "image_description":"Создать изображение по запросу (например, /image кошка)",
+        "tts_description":"Создать речь из текста (например, /tts мой дом)",
         "stats_description":"Получить статистику использования",
         "resend_description":"Повторная отправка последнего сообщения",
         "chat_description":"Общайся с ботом!",

@@ -11,8 +11,17 @@ class PromptManager:
             prompt_name = self.prompts.get('__active__', 'default')
         
         specific_prompt = self.prompts.get(prompt_name, '')
-        return f"{self.base_prompt}\n\n{specific_prompt}".strip()
+        return f"{specific_prompt}\n\n{self.base_prompt}".strip()
     
 
 
 prompt = PromptManager(prompts)
+
+# assistant_prompt = prompt.get_full_prompt('__active__')
+
+# def get_prompt(a):
+#     return a
+
+# system_prompt = get_prompt(assistant_prompt)
+# print(assistant_prompt)
+# print(system_prompt)

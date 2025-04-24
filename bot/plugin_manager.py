@@ -75,102 +75,243 @@ class PluginManager:
                     if function_name in map(lambda spec: spec.get('name'), plugin.get_spec())), None)
 
 
-# -------------------------------------------------------------------
-class DataPlugin:
-    """
-    Абстракция для плагинов данных.
-    """
-    def is_relevant(self, query: str) -> bool:
-        """Проверяет, связан ли запрос с данным типом данных"""
-        raise NotImplementedError
 
-    def get_data(self) -> str:
-        """Получает данные для запроса"""
-        raise NotImplementedError
+# # -------------------------------------------------------------------
+# class DataPlugin:
+#     """
+#     Абстракция для плагинов данных.
+#     """
+#     def is_relevant(self, query: str) -> bool:
+#         """Проверяет, связан ли запрос с данным типом данных"""
+#         raise NotImplementedError
 
-
-class WeatherPlugin(DataPlugin):
-    """Плагин для получения погоды"""
-    def __init__(self):
-        self.cache = {
-            'timestamp': 0,
-            'value': None
-        }
-        self.cache_ttl = 1800
+#     def get_data(self) -> str:
+#         """Получает данные для запроса"""
+#         raise NotImplementedError
 
 
-    def is_relevant(self, query: str) -> bool:
-        weather_keywords = {'погода', 'температур', 'дожд', 'солнц', '°c', 'осадк', 'ветер', 'влажност'}
-        return any(keyword in query.lower() for keyword in weather_keywords)
-
-    def extract_city(self, query: str) -> str:
-        for word in query.split():
-            if word.lower() in ['пхукет', 'бангкок', 'паттайя']:
-                return word.capitalize()
-        return "Пхукет" 
-
-    def get_data(self, query: str) -> str:
-        city = self.extract_city(query)
-        if not city:
-            return "[ОШИБКА ПОГОДЫ] Не удалось определить город. Нужно уточнить: 'Укажите город, например: `Погода в Пхукете`'"
-
-        cache_key = f"weather_{city}"
-        current_time = time.time()
+# class WeatherPlugin(DataPlugin):
+#     """Плагин для получения погоды с фокусом на Таиланд и пляжные курорты"""
+    
+#     def __init__(self):
+#         # Инициализация кеша для каждого города отдельно
+#         self.cache = {}
+#         self.cache_ttl = 1800  # 30 минут
         
-        if cache_key in self.cache and current_time - self.cache[cache_key]['timestamp'] < self.cache_ttl:
-            return self.cache[cache_key]['value']
+#         # Словарь локаций в Таиланде и их вариаций написания
+#         self.thai_locations = {
+#             # Основные курорты и города
+#             'пхукет': 'Пхукет', 'пукет': 'Пхукет', 'пухкет': 'Пхукет', 'пхукете': 'Пхукет',
+#             'phuket': 'Пхукет', 'пхукете': 'Пхукет', 'пхукету': 'Пхукет',
+            
+#             'паттай': 'Паттайя', 'патай': 'Паттайя', 'патайя': 'Паттайя', 'паттая': 'Паттайя', 
+#             'патая': 'Паттайя', 'pattaya': 'Паттайя', 'паттайе': 'Паттайя', 'паттайю': 'Паттайя',
+            
+#             'бангкок': 'Бангкок', 'bangkok': 'Бангкок', 'бангкоке': 'Бангкок', 'бкк': 'Бангкок',
+            
+#             'самуи': 'Самуи', 'самуй': 'Самуи', 'самуе': 'Самуи', 'koh samui': 'Самуи',
+#             'ко самуи': 'Самуи', 'острове самуи': 'Самуи', 'самуйи': 'Самуи',
+            
+#             'краби': 'Краби', 'krabi': 'Краби', 'краби провинции': 'Краби', 'ао нанге': 'Краби',
+            
+#             'хуахин': 'Хуахин', 'hua hin': 'Хуахин', 'хуа хин': 'Хуахин', 'хуахине': 'Хуахин',
+            
+#             'чиангмай': 'Чиангмай', 'чианг май': 'Чиангмай', 'чианг-май': 'Чиангмай', 
+#             'chiang mai': 'Чиангмай', 'чиангмае': 'Чиангмай',
+            
+#             'паи': 'Паи', 'pai': 'Паи',
+#             'пхи-пхи': 'Пхи-Пхи', 'пхипхи': 'Пхи-Пхи', 'phi phi': 'Пхи-Пхи', 'ко пхи пхи': 'Пхи-Пхи',
+#             'ко чанг': 'Ко Чанг', 'чанг': 'Ко Чанг', 'koh chang': 'Ко Чанг',
+#             'ко ланта': 'Ко Ланта', 'ланта': 'Ко Ланта', 'koh lanta': 'Ко Ланта',
+            
+#             # Общие фразы о Таиланде
+#             'тайланд': 'Бангкок', 'таиланд': 'Бангкок', 'thailand': 'Бангкок', 
+#             'тай': 'Бангкок', 'тае': 'Бангкок'
+#         }
         
-        try:
-            api_key = os.getenv("WEATHER_API_KEY")
-            if not api_key:
-                return "[ОШИБКА ПОГОДЫ] Сервис временно недоступен (отсутствует API-ключ)"
+#         # Ключевые слова для погоды, включая русские и тайские 
+#         self.weather_keywords = {
+#             'погод', 'температур', 'дожд', 'солнц', '°c', 'осадк', 'ветер', 'влажност',
+#             'жара', 'жарко', 'градус', 'облач', 'облак', 'тепло', 'холодно',
+#             'климат', 'сезон', 'метео', 'гроза', 'ливень', 'прогноз', 'weather',
+#             'метеоданн', 'зонт', 'осадки', 'туман', 'солнце'
+#         }
+
+#     def is_relevant(self, query: str) -> bool:
+#         """
+#         Определяет, относится ли запрос к погоде в Таиланде
+#         """
+#         query_lower = query.lower()
+        
+#         # Проверяем наличие ключевых слов погоды
+#         has_weather_keyword = any(keyword in query_lower for keyword in self.weather_keywords)
+        
+#         # Проверяем явные запросы о погоде
+#         explicit_weather_questions = [
+#             'какая погода', 'что с погодой', 'погода в', 'погода на', 
+#             'какой прогноз', 'какая температура', 'сколько градусов'
+#         ]
+#         explicit_question = any(phrase in query_lower for phrase in explicit_weather_questions)
+        
+#         # Проверяем наличие тайской локации
+#         has_thai_location = self._extract_location(query_lower) is not None
+        
+#         # Считаем запрос релевантным, если:
+#         # 1. Есть прямой вопрос о погоде (независимо от указания локации)
+#         # 2. Есть упоминание погоды и локации в Таиланде
+#         return explicit_question or (has_weather_keyword and has_thai_location)
+
+#     def _extract_location(self, query: str) -> str:
+#         """
+#         Извлекает название местоположения из запроса с учетом предлогов и контекста
+#         """
+#         # Паттерны с предлогами для более точного определения
+#         location_patterns = [
+#             r'погода (?:в|на) (\w+[-]?\w*)',  # погода в Пхукете, погода на Пхи-Пхи
+#             r'(?:в|на) (\w+[-]?\w*) (?:погода|градус|температур)',  # в Пхукете погода
+#             r'(?:погода|температура) (?:в городе|в|на острове) (\w+[-]?\w*)',  # погода в городе Краби
+#             r'(?:температура|градус|тепло|жарко|холодно) (?:в|на) (\w+[-]?\w*)'  # температура в Паттайе
+#         ]
+        
+#         # Сначала проверяем по паттернам
+#         for pattern in location_patterns:
+#             matches = re.findall(pattern, query)
+#             if matches:
+#                 location_word = matches[0].lower()
+#                 # Проверяем совпадение с нашим словарем локаций
+#                 for key, value in self.thai_locations.items():
+#                     if key in location_word:
+#                         return value
+        
+#         # Если по паттернам не нашли, проверяем просто наличие слов из словаря
+#         for key, value in self.thai_locations.items():
+#             if key in query:
+#                 return value
+        
+#         # Проверяем общие обозначения текущей локации
+#         location_here_patterns = ['здесь', 'тут', 'у нас', 'у меня', 'сейчас']
+#         if any(pattern in query for pattern in location_here_patterns):
+#             # По умолчанию для чата ПХУКЕТ
+#             return "Пхукет"
                 
-            url = f"https://api.weatherapi.com/v1/current.json?key={api_key}&q={city}&lang=ru"
-            response = requests.get(url, timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            
-            if "current" not in data:
-                return f"[ОШИБКА ПОГОДЫ] Не удалось обработать данные для города '{city}'"
-            
-            current = data["current"]
-            result = (
-                f"Актуальная информация о погоде в {city} на сегодня: {current['temp_c']}°C, "
-                f"{current['condition']['text']}. "
-                f"Ветер: {current['wind_kph']/3.6:.1f} м/с"
-            )
-            
-            self.cache[cache_key] = {
-                'timestamp': current_time,
-                'value': result
-            }
-            
-            return result
-            
-        except requests.exceptions.Timeout:
-            return "[ОШИБКА ПОГОДЫ] Сервис не отвечает. Попробуйте позже"
-        except requests.exceptions.RequestException as e:
-            return f"[ОШИБКА ПОГОДЫ] Ошибка соединения: {str(e)}"
-        except Exception as e:
-            return f"[ОШИБКА ПОГОДЫ] Неизвестная ошибка: {str(e)}"
+#         return None
 
-class CurrencyPlugin(DataPlugin):
-    """Плагин для получения информации о валюте"""
-    def is_relevant(self, query: str) -> bool:
-        currency_keywords = ["курс", "валюта", "доллар", "евро"]
-        return any(word in query.lower() for word in currency_keywords)
+#     def get_data(self, query: str) -> str:
+#         """
+#         Получает и форматирует данные о погоде для найденной локации
+#         """
+#         # Определяем местоположение
+#         location = self._extract_location(query.lower())
+#         if not location:
+#             # Для чата ПХУКЕТ используем Пхукет по умолчанию
+#             location = "Пхукет"
+        
+#         # Проверяем кеш
+#         cache_key = f"weather_{location.lower()}"
+#         current_time = time.time()
+        
+#         if cache_key in self.cache and current_time - self.cache[cache_key]['timestamp'] < self.cache_ttl:
+#             return self.cache[cache_key]['value']
+        
+#         try:
+#             api_key = os.getenv("WEATHER_API_KEY")
+#             if not api_key:
+#                 # Более информативное сообщение об ошибке
+#                 return "[ПОГОДА] API недоступен. Данных нет."
+            
+#             # Используем официальное название для API запроса
+#             location_api_map = {
+#                 'Пхукет': 'Phuket',
+#                 'Паттайя': 'Pattaya',
+#                 'Бангкок': 'Bangkok',
+#                 'Самуи': 'Koh Samui',
+#                 'Краби': 'Krabi',
+#                 'Хуахин': 'Hua Hin',
+#                 'Чиангмай': 'Chiang Mai',
+#                 'Паи': 'Pai',
+#                 'Пхи-Пхи': 'Phi Phi Islands',
+#                 'Ко Чанг': 'Koh Chang',
+#                 'Ко Ланта': 'Koh Lanta'
+#             }
+            
+#             api_location = location_api_map.get(location, location)
+#             url = f"https://api.weatherapi.com/v1/current.json?key={api_key}&q={api_location}&lang=ru"
+            
+#             response = requests.get(url, timeout=5)
+#             response.raise_for_status()
+#             data = response.json()
+            
+#             if "current" not in data:
+#                 return f"[ПОГОДА] Нет данных для {location}."
+            
+#             # Извлекаем данные
+#             current = data["current"]
+#             condition = current['condition']['text']
+            
+#             # Формируем базовую информацию
+#             result = (
+#                 f"[ПОГОДА] В {location} сейчас {current['temp_c']}°C. "
+#                 f"{condition}. "
+#                 f"Ветер: {current['wind_kph']/3.6:.1f} м/с. "
+#             )
+            
+#             # Добавляем важную информацию для пляжного отдыха
+#             if 'humidity' in current:
+#                 result += f"Влажность: {current['humidity']}%. "
+            
+#             if 'feelslike_c' in current and abs(current['feelslike_c'] - current['temp_c']) > 1:
+#                 result += f"Ощущается как {current['feelslike_c']}°C. "
+            
+#             if 'uv' in current:
+#                 uv = current['uv']
+#                 uv_description = "низкий"
+#                 if uv > 2 and uv <= 5:
+#                     uv_description = "умеренный"
+#                 elif uv > 5 and uv <= 7:
+#                     uv_description = "высокий"
+#                 elif uv > 7 and uv <= 10:
+#                     uv_description = "очень высокий"
+#                 elif uv > 10:
+#                     uv_description = "экстремальный"
+                
+#                 result += f"UV-индекс: {uv} ({uv_description}). "
+            
+#             # Если есть вероятность осадков, добавляем информацию
+#             if 'precip_mm' in current and current['precip_mm'] > 0:
+#                 result += f"Осадки: {current['precip_mm']} мм. "
+            
+#             # Кешируем результат
+#             self.cache[cache_key] = {
+#                 'timestamp': current_time,
+#                 'value': result.strip()
+#             }
+            
+#             return result.strip()
+            
+#         except requests.exceptions.Timeout:
+#             return "[ПОГОДА] Сервис не отвечает. Данных нет."
+#         except requests.exceptions.RequestException as e:
+#             return f"[ПОГОДА] Ошибка получения данных: {str(e)}"
+#         except Exception as e:
+#             return f"[ПОГОДА] Ошибка: {str(e)}"
 
-    def get_data(self) -> str:
-        # Ваш код для получения информации о валюте
-        return "Курс доллара: 75 руб."
+# class CurrencyPlugin(DataPlugin):
+#     """Плагин для получения информации о валюте"""
+#     def is_relevant(self, query: str) -> bool:
+#         currency_keywords = ["курс", "валюта", "доллар", "евро"]
+#         return any(word in query.lower() for word in currency_keywords)
+
+#     def get_data(self) -> str:
+#         # Ваш код для получения информации о валюте
+#         return "Курс доллара: 75 руб."
 
 
-class NewsPlugin(DataPlugin):
-    """Плагин для получения новостей"""
-    def is_relevant(self, query: str) -> bool:
-        news_keywords = ["новости", "события", "новость", "мировые новости"]
-        return any(word in query.lower() for word in news_keywords)
+# class NewsPlugin(DataPlugin):
+#     """Плагин для получения новостей"""
+#     def is_relevant(self, query: str) -> bool:
+#         news_keywords = ["новости", "события", "новость", "мировые новости"]
+#         return any(word in query.lower() for word in news_keywords)
 
-    def get_data(self) -> str:
-        # Ваш код для получения новостей
-        return "Последние новости: важное событие в мире"
+#     def get_data(self) -> str:
+#         # Ваш код для получения новостей
+#         return "Последние новости: важное событие в мире"

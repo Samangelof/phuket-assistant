@@ -11,7 +11,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResu
 from telegram import InputTextMessageContent, BotCommand
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
-    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext
+    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, ConversationHandler
 
 from pydub import AudioSegment
 from PIL import Image
@@ -22,6 +22,9 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     cleanup_intermediate_files, load_prompts, save_prompts
 from openai_helper import OpenAIHelper, localized_text
 from usage_tracker import UsageTracker
+
+# Состояния для конечного автомата диалога редактирования
+CHOOSING_ACTION, ENTERING_TEXT = range(2)
 
 
 class ChatGPTTelegramBot:
@@ -49,13 +52,13 @@ class ChatGPTTelegramBot:
                 'resend_description', bot_language))
         ]
         # If imaging is enabled, add the "image" command to the list
-        if self.config.get('enable_image_generation', False):
-            self.commands.append(BotCommand(
-                command='image', description=localized_text('image_description', bot_language)))
+        # if self.config.get('enable_image_generation', False):
+        #     self.commands.append(BotCommand(
+        #         command='image', description=localized_text('image_description', bot_language)))
 
-        if self.config.get('enable_tts_generation', False):
-            self.commands.append(BotCommand(
-                command='tts', description=localized_text('tts_description', bot_language)))
+        # if self.config.get('enable_tts_generation', False):
+        #     self.commands.append(BotCommand(
+        #         command='tts', description=localized_text('tts_description', bot_language)))
 
         self.group_commands = [BotCommand(
             command='chat', description=localized_text('chat_description', bot_language)
@@ -1123,7 +1126,8 @@ class ChatGPTTelegramBot:
         await application.bot.set_my_commands(self.commands)
 
 # -----------------------------------------------------------------------------------------------
-# Добавление/Установка/просмотр промптов
+# ПРОМПТЫ
+# Добавить/Просмотреть/Установить/Редактировать/Удалить/Просмотреть полный промпт
     async def add_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
 
@@ -1144,7 +1148,6 @@ class ChatGPTTelegramBot:
 
         await update.message.reply_text(f"Промпт '{key}' добавлен.")
 
-
     async def list_prompts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
 
@@ -1155,18 +1158,20 @@ class ChatGPTTelegramBot:
         prompts = load_prompts()
         active = prompts.get("__active__")
 
-        keys = [key for key in prompts.keys() if key != "__active__"]
+        keys = [key for key in prompts.keys() if not key.startswith("__")]
         if not keys:
             await update.message.reply_text("Промпты не найдены.")
             return
 
-        text = "Доступные промпты:\n"
-        for key in keys:
-            mark = " (активный)" if key == active else ""
-            text += f"• {key}{mark}\n"
+        lines = []
+        for key in sorted(keys):
+            content = prompts.get(key, "").strip().replace('\n', ' ')
+            preview = content[:40] + ("…" if len(content) > 40 else "")
+            active_mark = "✅" if key == active else "  "
+            lines.append(f"{active_mark} {key.ljust(12)} | {preview}")
 
-        await update.message.reply_text(text)
-
+        text = "*Доступные промпты:*\n```\n" + "\n".join(lines) + "\n```"
+        await update.message.reply_text(text, parse_mode="Markdown")
 
     async def set_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1195,6 +1200,49 @@ class ChatGPTTelegramBot:
 
         await update.message.reply_text(f"Промпт '{key}' теперь активный.")
 
+    # async def edit_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    #     user_id = update.effective_user.id
+
+    #     if not is_admin(self.config, user_id):
+    #         await update.message.reply_text("У тебя нет прав редактировать промпты.")
+    #         return
+
+    #     # Проверяем правильность ввода команды
+    #     message_text = update.message.text
+    #     # Пропускаем команду /editprompt и получаем оставшийся текст
+    #     parts = message_text.split(maxsplit=2)
+        
+    #     if len(parts) < 3:
+    #         await update.message.reply_text("Использование: /editprompt <ключ> <новый_текст>")
+    #         return
+        
+    #     _, key, new_text = parts
+        
+    #     prompts = load_prompts()
+        
+    #     # Проверяем, существует ли промпт с таким ключом
+    #     if key not in prompts:
+    #         await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
+    #         return
+        
+    #     # Проверяем, не пытается ли пользователь изменить системные промпты
+    #     if key.startswith("__") and key.endswith("__"):
+    #         await update.message.reply_text("Системные промпты нельзя редактировать.")
+    #         return
+        
+    #     # Сохраняем старый текст на случай, если надо будет вернуться
+    #     old_text = prompts[key]
+        
+    #     # Обновляем текст промпта
+    #     prompts[key] = new_text
+    #     save_prompts(prompts)
+        
+    #     # Если редактируемый промпт является активным, обновляем его в openai
+    #     if prompts.get("__active__") == key:
+    #         self.openai.set_prompt(new_text)
+        
+    #     await update.message.reply_text(f"Промпт '{key}' обновлен.")
+
     async def delete_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
 
@@ -1222,7 +1270,124 @@ class ChatGPTTelegramBot:
 
         await update.message.reply_text(f"Промпт '{key}' удалён.")
 
+    async def view_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        
+        if not is_admin(self.config, user_id):
+            await update.message.reply_text("Нет доступа.")
+            return
+        
+        if len(context.args) != 1:
+            await update.message.reply_text("Использование: /viewprompt <ключ>")
+            return
+        
+        key = context.args[0]
+        prompts = load_prompts()
+        
+        if key not in prompts:
+            await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
+            return
+        
+        prompt_text = prompts[key]
+        await update.message.reply_text(f"*Промпт '{key}'*:\n```\n{prompt_text}\n```", parse_mode="Markdown")
 
+
+    # Начало процесса редактирования
+    async def edit_prompt_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        
+        if not is_admin(self.config, user_id):
+            await update.message.reply_text("У тебя нет прав редактировать промпты.")
+            return
+        
+        if len(context.args) != 1:
+            await update.message.reply_text("Использование: /edit <ключ>")
+            return
+        
+        key = context.args[0]
+        prompts = load_prompts()
+        
+        if key not in prompts:
+            await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
+            return
+        
+        if key.startswith("__") and key.endswith("__"):
+            await update.message.reply_text("Системные промпты нельзя редактировать.")
+            return
+        
+        context.user_data['editing_key'] = key
+        context.user_data['prompt_text'] = prompts[key]
+        
+        keyboard = [
+            [InlineKeyboardButton("Заменить полностью", callback_data="replace")],
+            [InlineKeyboardButton("Добавить текст в конец", callback_data="append")],
+            [InlineKeyboardButton("Отмена", callback_data="cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"Редактирование промпта '{key}'. Текущий текст:\n\n"
+            f"```\n{prompts[key]}\n```\n\n"
+            f"Выберите действие:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        
+        return CHOOSING_ACTION
+
+    # Обработка выбора действия
+    async def edit_prompt_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        action = query.data
+        
+        if action == "cancel":
+            await query.edit_message_text("Редактирование отменено.")
+            return ConversationHandler.END
+        
+        context.user_data['action'] = action
+        
+        if action == "replace":
+            await query.edit_message_text(
+                "Введите новый текст промпта полностью:"
+            )
+        elif action == "append":
+            await query.edit_message_text(
+                "Введите текст, который нужно добавить в конец промпта:"
+            )
+        
+        return ENTERING_TEXT
+
+    # Сохранение изменений в промпте
+    async def save_prompt_changes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_text = update.message.text
+        key = context.user_data['editing_key']
+        action = context.user_data['action']
+        prompts = load_prompts()
+        
+        if action == "replace":
+            prompts[key] = user_text
+        elif action == "append":
+            prompts[key] = prompts[key] + "\n" + user_text
+        
+        save_prompts(prompts)
+        
+        # Если редактируемый промпт является активным, обновляем его в openai
+        if prompts.get("__active__") == key:
+            self.openai.set_prompt(prompts[key])
+        
+        await update.message.reply_text(f"Промпт '{key}' успешно обновлен.")
+        
+        return ConversationHandler.END
+
+    # Отмена операции редактирования
+    async def cancel_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Редактирование отменено.")
+        return ConversationHandler.END
+
+
+# -----------------------------------------------------------------------------------------------
     def run(self):
         """
         Runs the bot indefinitely until the user presses Ctrl+C
@@ -1236,15 +1401,32 @@ class ChatGPTTelegramBot:
             .build()
         
         application.add_handler(CommandHandler('addprompt', self.add_prompt))
-        application.add_handler(CommandHandler('setprompt', self.set_prompt))
         application.add_handler(CommandHandler("prompts", self.list_prompts))
+        application.add_handler(CommandHandler('setprompt', self.set_prompt))
+        # application.add_handler(CommandHandler("editprompt", self.edit_prompt))
         application.add_handler(CommandHandler("delprompt", self.delete_prompt))
+
+
+        # Добавление обычных команд
+        application.add_handler(CommandHandler("viewprompt", self.view_prompt))
+
+        # Создание конечного автомата диалога для редактирования промптов
+        edit_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("edit", self.edit_prompt_start)],
+            states={
+                CHOOSING_ACTION: [CallbackQueryHandler(self.edit_prompt_action)],
+                ENTERING_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.save_prompt_changes)]
+            },
+            fallbacks=[CommandHandler("cancel", self.cancel_edit)],
+            per_message=False
+        )
+        application.add_handler(edit_conv_handler)
 
 
         application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('help', self.help))
-        application.add_handler(CommandHandler('image', self.image))
-        application.add_handler(CommandHandler('tts', self.tts))
+        # application.add_handler(CommandHandler('image', self.image))
+        # application.add_handler(CommandHandler('tts', self.tts))
         application.add_handler(CommandHandler('start', self.help))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))

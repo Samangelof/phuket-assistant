@@ -15,7 +15,7 @@ from PIL import Image
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 from utils import is_direct_result, encode_image, decode_image
-from plugin_manager import PluginManager, WeatherPlugin, CurrencyPlugin, NewsPlugin
+from plugin_manager import PluginManager
 from prompt_manager import prompt
 
 
@@ -126,8 +126,6 @@ class OpenAIHelper:
         # self.assistant_prompt = config['assistant_prompt']
         # self.assistant_prompt = prompts[config['assistant_prompt']]
         self.assistant_prompt = prompt.get_full_prompt(config['assistant_prompt'])
-        self.plugins = [WeatherPlugin(), CurrencyPlugin(), NewsPlugin()]
-        self.cache = {}
 
     def set_prompt(self, new_prompt: str):
         logging.info(f"Assistant prompt updated to: {new_prompt}")
@@ -283,30 +281,14 @@ class OpenAIHelper:
         #! Подмешиваю дату и время в системное сообщение
             current_datetime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             system_prompt = self.get_prompt()
-        #! Получаю актуальную погоду
-            relevant_data = []
-            for plugin in self.plugins:
-                if plugin.is_relevant(query):
-                    plugin_data = plugin.get_data(query) if isinstance(plugin, WeatherPlugin) else plugin.get_data()
-                    
-                    if plugin_data and not plugin_data.startswith(("[ОШИБКА", "[ПОГОДА ОШИБКА]")):
-                        relevant_data.append(plugin_data)
-
-            # messages_with_datetime = [
-            #     {'role': 'system', 'content': f'Текущая дата и время: {current_datetime}'},
-            #     {'role': 'system', 'content': system_prompt}, 
-            #     *self.conversations[chat_id]
-            # ]
 
             messages_with_datetime = [
                 {'role': 'system', 'content': f'Текущая дата и время: {current_datetime}'},
                 {'role': 'system', 'content': system_prompt},
-                *[
-                    {'role': 'system', 'content': data} 
-                    for data in relevant_data
-                ],
                 *self.conversations[chat_id]
             ]
+
+
             print(f'Отправляю даные {messages_with_datetime}')
             common_args = {
                 'model': self.config['model'] if not self.conversations_vision[chat_id] else self.config['vision_model'],
