@@ -12,7 +12,8 @@ from telegram import InputTextMessageContent, BotCommand
 from telegram.error import RetryAfter, TimedOut, BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
     filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, ConversationHandler
-
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pydub import AudioSegment
 from PIL import Image
 
@@ -22,10 +23,14 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     cleanup_intermediate_files, load_prompts, save_prompts
 from openai_helper import OpenAIHelper, localized_text
 from usage_tracker import UsageTracker
+import warnings
 
-# Состояния для конечного автомата диалога редактирования
-CHOOSING_ACTION, ENTERING_TEXT = range(2)
 
+warnings.filterwarnings("ignore", category=UserWarning, module="telegram")
+
+
+
+SELECT_PROMPT, CHOOSING_ACTION, ENTERING_TEXT = range(3)
 
 class ChatGPTTelegramBot:
     """
@@ -44,12 +49,18 @@ class ChatGPTTelegramBot:
         self.commands = [
             BotCommand(command='help', description=localized_text(
                 'help_description', bot_language)),
-            BotCommand(command='reset', description=localized_text(
-                'reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text(
                 'stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text(
                 'resend_description', bot_language))
+        ]
+        self.admin_commands = [
+            BotCommand("prompts", "Вывести все промпты\n"),
+            BotCommand("addprompt", "Добавить новый промпт. \n(Пример: /addprompt weather Ты — погодный бот. Отвечай кратко.\n"),
+            BotCommand("viewprompt", "Показать полный промпт по названию. \n(Пример: /viewprompt weather)\n"),
+            BotCommand("setprompt", "Сделать активным промпт по названию. \n(Пример: /setprompt weather)\n"),
+            BotCommand("editprompt", "Редактировать промпт по названию. \n(Пример: /editprompt weather)\n"),
+            BotCommand("delprompt", "Удалить промпт по названию. \n(Пример: /delprompt weather)\n"),            
         ]
         # If imaging is enabled, add the "image" command to the list
         # if self.config.get('enable_image_generation', False):
@@ -70,24 +81,55 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
 
+        self.last_request_time = {}  # Время последнего запроса
+        self.daily_requests = defaultdict(list)  # Список запросов на день
+        self.min_interval = timedelta(seconds=5)  # Минимальный интервал между запросами
+        self.daily_limit = 50  # Лимит запросов в день
+
+    # --- Методы для проверки лимитов ---
+    def is_rate_limited(self, user_id: int) -> bool:
+        """Проверяет, не превысил ли пользователь минимальный интервал между запросами."""
+        now = datetime.now()
+        last = self.last_request_time.get(user_id)
+        if last and (now - last) < self.min_interval:
+            return True
+        self.last_request_time[user_id] = now
+        return False
+
+    def is_daily_limited(self, user_id: int) -> bool:
+        """Проверяет, не превысил ли пользователь лимит запросов за день."""
+        now = datetime.now()
+        self.daily_requests[user_id] = [ts for ts in self.daily_requests[user_id] if ts.date() == now.date()]
+        if len(self.daily_requests[user_id]) >= self.daily_limit:
+            return True
+        self.daily_requests[user_id].append(now)
+        return False
+    
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
         """
-        commands = self.group_commands if is_group_chat(
-            update) else self.commands
-        commands_description = [
-            f'/{command.command} - {command.description}' for command in commands]
+        user_id = update.effective_user.id
+        is_admin_user = is_admin(self.config, user_id)
+
         bot_language = self.config['bot_language']
-        help_text = (
-            localized_text('help_text', bot_language)[0] +
-            '\n\n' +
-            '\n'.join(commands_description) +
-            '\n\n' +
-            localized_text('help_text', bot_language)[1] +
-            '\n\n' +
-            localized_text('help_text', bot_language)[2]
-        )
+        is_group = is_group_chat(update)
+
+        # Определяем команды
+        base_commands = self.group_commands if is_group else self.commands
+        base_descriptions = [f'/{cmd.command} - {cmd.description}' for cmd in base_commands]
+
+        help_text = localized_text('help_text', bot_language)[0] + '\n\n'
+        help_text += '\n'.join(base_descriptions) + '\n'
+
+        # Добавляем админские команды, если пользователь админ
+        if is_admin_user:
+            admin_descriptions = [f'/{cmd.command} - {cmd.description}' for cmd in self.admin_commands]
+            help_text += '\nКоманды для админа\n' + '\n'.join(admin_descriptions)
+
+        help_text += '\n\n' + localized_text('help_text', bot_language)[1]
+        help_text += '\n\n' + localized_text('help_text', bot_language)[2]
+
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -706,13 +748,14 @@ class ChatGPTTelegramBot:
             "text": update.message.text,
             "date": str(update.message.date),
         }
+
         user_id = update.message.from_user.id
+        
         if user_id not in self.usage:
             self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
         
-        self.usage[user_id].add_message_log(message_data)  # Сохраняем данные
+        self.usage[user_id].add_message_log(message_data)
         # --- Конец логирования ---
-
 
         if not await self.check_allowed_and_within_budget(update, context):
             return
@@ -727,25 +770,45 @@ class ChatGPTTelegramBot:
         self.last_message[chat_id] = prompt
 
         if is_group_chat(update):
-            trigger_keyword = self.config['group_trigger_keyword']
+            # Существующая логика для групповых чатов
+            # Получаем список триггерных слов
+            trigger_keywords = self.config['group_trigger_keyword'].split(',')
 
-            # Изменено: проверяем наличие ключевого слова в любом месте сообщения
-            if trigger_keyword.lower() in prompt.lower():
-                # Удаляем все вхождения ключевого слова из промпта
-                prompt = prompt.replace(trigger_keyword, "").strip()
+            # Проверяем наличие любого триггерного слова в сообщении
+            if any(trigger_keyword.lower() in prompt.lower() for trigger_keyword in trigger_keywords):
+                # Если одно из триггерных слов найдено, продолжаем обработку
+                for trigger_keyword in trigger_keywords:
+                    # Удаляем все вхождения ключевого слова из промпта
+                    prompt = prompt.replace(trigger_keyword, "").strip()
 
                 if update.message.reply_to_message and \
                         update.message.reply_to_message.text and \
                         update.message.reply_to_message.from_user.id != context.bot.id:
                     prompt = f'"{update.message.reply_to_message.text}" {prompt}'
-            else:
-                # Обрабатываем ответы на сообщения бота без ключевого слова
-                if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
-                    logging.info('Message is a reply to the bot, allowing...')
-                else:
-                    logging.warning(
-                        'Message does not contain trigger keyword, ignoring...')
+                
+                # Проверка лимитов для групповых чатов остается как есть
+                user_id = update.message.from_user.id
+                if self.is_rate_limited(user_id):
+                    await update.message.reply_text("Слишком часто. Подожди немного.")
                     return
+                if self.is_daily_limited(user_id):
+                    await update.message.reply_text("Вы превысили лимит запросов на сегодня.")
+                    return
+            else:
+                # Сообщение не содержит триггерных слов
+                logging.warning('Message does not contain trigger keyword, ignoring...')
+                return
+        else:
+            # Новый код для личных сообщений
+            # Проверка лимитов для личных чатов
+            if self.is_rate_limited(user_id):
+                await update.message.reply_text("Слишком часто. Подожди немного.")
+                return
+            
+            if self.is_daily_limited(user_id):
+                await update.message.reply_text("Вы превысили лимит запросов на сегодня.")
+                return
+
 
         try:
             total_tokens = 0
@@ -1132,7 +1195,7 @@ class ChatGPTTelegramBot:
         user_id = update.effective_user.id
 
         if not is_admin(self.config, user_id):
-            await update.message.reply_text("У тебя нет прав добавлять промпты.")
+            await update.message.reply_text("🚫 У тебя нет прав добавлять промпты.")
             return
 
         if len(context.args) < 2:
@@ -1146,7 +1209,7 @@ class ChatGPTTelegramBot:
         prompts[key] = prompt_text
         save_prompts(prompts)
 
-        await update.message.reply_text(f"Промпт '{key}' добавлен.")
+        await update.message.reply_text(f"✅ Промпт '{key}' добавлен.")
 
     async def list_prompts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1158,7 +1221,8 @@ class ChatGPTTelegramBot:
         prompts = load_prompts()
         active = prompts.get("__active__")
 
-        keys = [key for key in prompts.keys() if not key.startswith("__")]
+        keys = [key for key in prompts.keys() if key != "__active__"]
+        # keys = [key for key in prompts.keys() if not key.startswith("__")]
         if not keys:
             await update.message.reply_text("Промпты не найдены.")
             return
@@ -1177,7 +1241,7 @@ class ChatGPTTelegramBot:
         user_id = update.effective_user.id
 
         if not is_admin(self.config, user_id):
-            await update.message.reply_text("У тебя нет прав менять промпт.")
+            await update.message.reply_text("🚫 У тебя нет прав менять промпт.")
             return
 
         if len(context.args) != 1:
@@ -1188,7 +1252,7 @@ class ChatGPTTelegramBot:
         prompts = load_prompts()
 
         if key not in prompts:
-            await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
+            await update.message.reply_text(f"❌ Промпт с ключом '{key}' не найден.")
             return
 
         prompt_text = prompts[key]
@@ -1198,50 +1262,90 @@ class ChatGPTTelegramBot:
         prompts["__active__"] = key
         save_prompts(prompts)
 
-        await update.message.reply_text(f"Промпт '{key}' теперь активный.")
+        await update.message.reply_text(f"✅ Промпт '{key}' теперь активный.")
 
-    # async def edit_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    #     user_id = update.effective_user.id
+    # Логика изменения/обновления промпта
+    # 1. Entry
+    async def edit_prompt_start(self, update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if not is_admin(self.config, user_id):
+            return await update.message.reply_text("Нет доступа.")
+        prompts = load_prompts()
+        keys = [k for k in prompts if not k.startswith("__")]
+        keyboard = [[InlineKeyboardButton(k, callback_data=k)] for k in keys]
+        
+        # Добавляем кнопку отмены
+        keyboard.append([InlineKeyboardButton("Отмена", callback_data="cancel_selection")])
+        
+        await update.message.reply_text(
+            "Какой промпт редактировать?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return SELECT_PROMPT
 
-    #     if not is_admin(self.config, user_id):
-    #         await update.message.reply_text("У тебя нет прав редактировать промпты.")
-    #         return
+    # 2. Выбор ключа
+    async def select_prompt(self, update, context):
+        key = update.callback_query.data
+        context.user_data['edit_key'] = key
+        await update.callback_query.answer()
+        kb = [
+            [InlineKeyboardButton("Заменить полностью", callback_data="replace")],
+            [InlineKeyboardButton("Добавить в конец",    callback_data="append")],
+            [InlineKeyboardButton("Отмена",              callback_data="cancel")],
+        ]
+        await update.callback_query.edit_message_text(
+            f"Выбран «{key}». Что сделать?",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return CHOOSING_ACTION
 
-    #     # Проверяем правильность ввода команды
-    #     message_text = update.message.text
-    #     # Пропускаем команду /editprompt и получаем оставшийся текст
-    #     parts = message_text.split(maxsplit=2)
+    # 3. Выбор действия
+    async def choose_action(self, update, context):
+        action = update.callback_query.data
+        await update.callback_query.answer()
+
+        if action == "cancel":
+            await update.callback_query.edit_message_text("🚫 Отменено.")
+            return ConversationHandler.END
+
+        context.user_data['mode'] = action
+        prompt = load_prompts()[context.user_data['edit_key']]
         
-    #     if len(parts) < 3:
-    #         await update.message.reply_text("Использование: /editprompt <ключ> <новый_текст>")
-    #         return
+        cancel_kb = [[InlineKeyboardButton("Отменить", callback_data="cancel_edit")]]
         
-    #     _, key, new_text = parts
-        
-    #     prompts = load_prompts()
-        
-    #     # Проверяем, существует ли промпт с таким ключом
-    #     if key not in prompts:
-    #         await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
-    #         return
-        
-    #     # Проверяем, не пытается ли пользователь изменить системные промпты
-    #     if key.startswith("__") and key.endswith("__"):
-    #         await update.message.reply_text("Системные промпты нельзя редактировать.")
-    #         return
-        
-    #     # Сохраняем старый текст на случай, если надо будет вернуться
-    #     old_text = prompts[key]
-        
-    #     # Обновляем текст промпта
-    #     prompts[key] = new_text
-    #     save_prompts(prompts)
-        
-    #     # Если редактируемый промпт является активным, обновляем его в openai
-    #     if prompts.get("__active__") == key:
-    #         self.openai.set_prompt(new_text)
-        
-    #     await update.message.reply_text(f"Промпт '{key}' обновлен.")
+        await update.callback_query.edit_message_text(
+            f"Текущий промпт:\n```\n{prompt}\n```\n\n➡️ Жду новый текст для обновления промпта:",
+            reply_markup=InlineKeyboardMarkup(cancel_kb),
+            parse_mode='MarkdownV2'
+        )
+        return ENTERING_TEXT
+
+    # Добавляем обработчик для кнопки отмены при просмотре текста
+    async def cancel_from_preview(self, update, context):
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("🚫 Редактирование отменено.")
+        return ConversationHandler.END
+    
+    # 4. Получаем новый текст и сохраняем
+    async def enter_text(self, update, context):
+        new_text = update.message.text.strip()
+        key      = context.user_data['edit_key']
+        mode     = context.user_data['mode']
+        prompts  = load_prompts()
+
+        if mode == "replace":
+            prompts[key] = new_text
+        else:  # append
+            prompts[key] += " " + new_text
+
+        save_prompts(prompts)
+        await update.message.reply_text(f"✅ Промпт «{key}» обновлен ({mode}).")
+        return ConversationHandler.END
+
+    # 5. Фоллбэк
+    async def cancel_edit(self, update, context):
+        await update.message.reply_text("Редактирование отменено.")
+        return ConversationHandler.END
 
     async def delete_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1258,7 +1362,7 @@ class ChatGPTTelegramBot:
         prompts = load_prompts()
 
         if key not in prompts:
-            await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
+            await update.message.reply_text(f"❌ Промпт с ключом '{key}' не найден.")
             return
 
         if key == prompts.get("__active__"):
@@ -1268,7 +1372,7 @@ class ChatGPTTelegramBot:
         del prompts[key]
         save_prompts(prompts)
 
-        await update.message.reply_text(f"Промпт '{key}' удалён.")
+        await update.message.reply_text(f"Промпт '{key}' удален.")
 
     async def view_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1292,101 +1396,7 @@ class ChatGPTTelegramBot:
         await update.message.reply_text(f"*Промпт '{key}'*:\n```\n{prompt_text}\n```", parse_mode="Markdown")
 
 
-    # Начало процесса редактирования
-    async def edit_prompt_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        
-        if not is_admin(self.config, user_id):
-            await update.message.reply_text("У тебя нет прав редактировать промпты.")
-            return
-        
-        if len(context.args) != 1:
-            await update.message.reply_text("Использование: /edit <ключ>")
-            return
-        
-        key = context.args[0]
-        prompts = load_prompts()
-        
-        if key not in prompts:
-            await update.message.reply_text(f"Промпт с ключом '{key}' не найден.")
-            return
-        
-        if key.startswith("__") and key.endswith("__"):
-            await update.message.reply_text("Системные промпты нельзя редактировать.")
-            return
-        
-        context.user_data['editing_key'] = key
-        context.user_data['prompt_text'] = prompts[key]
-        
-        keyboard = [
-            [InlineKeyboardButton("Заменить полностью", callback_data="replace")],
-            [InlineKeyboardButton("Добавить текст в конец", callback_data="append")],
-            [InlineKeyboardButton("Отмена", callback_data="cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"Редактирование промпта '{key}'. Текущий текст:\n\n"
-            f"```\n{prompts[key]}\n```\n\n"
-            f"Выберите действие:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        
-        return CHOOSING_ACTION
-
-    # Обработка выбора действия
-    async def edit_prompt_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        
-        action = query.data
-        
-        if action == "cancel":
-            await query.edit_message_text("Редактирование отменено.")
-            return ConversationHandler.END
-        
-        context.user_data['action'] = action
-        
-        if action == "replace":
-            await query.edit_message_text(
-                "Введите новый текст промпта полностью:"
-            )
-        elif action == "append":
-            await query.edit_message_text(
-                "Введите текст, который нужно добавить в конец промпта:"
-            )
-        
-        return ENTERING_TEXT
-
-    # Сохранение изменений в промпте
-    async def save_prompt_changes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_text = update.message.text
-        key = context.user_data['editing_key']
-        action = context.user_data['action']
-        prompts = load_prompts()
-        
-        if action == "replace":
-            prompts[key] = user_text
-        elif action == "append":
-            prompts[key] = prompts[key] + "\n" + user_text
-        
-        save_prompts(prompts)
-        
-        # Если редактируемый промпт является активным, обновляем его в openai
-        if prompts.get("__active__") == key:
-            self.openai.set_prompt(prompts[key])
-        
-        await update.message.reply_text(f"Промпт '{key}' успешно обновлен.")
-        
-        return ConversationHandler.END
-
-    # Отмена операции редактирования
-    async def cancel_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Редактирование отменено.")
-        return ConversationHandler.END
-
-
+    
 # -----------------------------------------------------------------------------------------------
     def run(self):
         """
@@ -1404,26 +1414,28 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler("prompts", self.list_prompts))
         application.add_handler(CommandHandler('setprompt', self.set_prompt))
         # application.add_handler(CommandHandler("editprompt", self.edit_prompt))
+        application.add_handler(CommandHandler("viewprompt", self.view_prompt))
         application.add_handler(CommandHandler("delprompt", self.delete_prompt))
 
 
-        # Добавление обычных команд
-        application.add_handler(CommandHandler("viewprompt", self.view_prompt))
-
-        # Создание конечного автомата диалога для редактирования промптов
-        edit_conv_handler = ConversationHandler(
-            entry_points=[CommandHandler("edit", self.edit_prompt_start)],
+        # Регистрация
+        edit_conv = ConversationHandler(
+            entry_points=[CommandHandler("editprompt", self.edit_prompt_start)],
             states={
-                CHOOSING_ACTION: [CallbackQueryHandler(self.edit_prompt_action)],
-                ENTERING_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.save_prompt_changes)]
+                SELECT_PROMPT:    [CallbackQueryHandler(self.select_prompt)],
+                CHOOSING_ACTION:  [CallbackQueryHandler(self.choose_action)],
+                ENTERING_TEXT:    [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.enter_text),
+                    CallbackQueryHandler(self.cancel_from_preview, pattern="^cancel_edit$")
+                ],
             },
-            fallbacks=[CommandHandler("cancel", self.cancel_edit)],
-            per_message=False
+            fallbacks=[CommandHandler("cancel", self.cancel_edit)]
         )
-        application.add_handler(edit_conv_handler)
+        application.add_handler(edit_conv)
 
 
-        application.add_handler(CommandHandler('reset', self.reset))
+
+        # application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('help', self.help))
         # application.add_handler(CommandHandler('image', self.image))
         # application.add_handler(CommandHandler('tts', self.tts))

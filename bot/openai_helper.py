@@ -1,8 +1,8 @@
 from __future__ import annotations
-import datetime
 import logging
 import os
 
+import datetime
 import tiktoken
 
 import openai
@@ -119,6 +119,7 @@ class OpenAIHelper:
             api_key=config['api_key'], http_client=http_client)
         self.config = config
         self.plugin_manager = plugin_manager
+
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.conversations_vision: dict[int: bool] = {}  # {chat_id: is_vision}
         # {chat_id: last_update_timestamp}
@@ -126,6 +127,7 @@ class OpenAIHelper:
         # self.assistant_prompt = config['assistant_prompt']
         # self.assistant_prompt = prompts[config['assistant_prompt']]
         self.assistant_prompt = prompt.get_full_prompt(config['assistant_prompt'])
+
 
     def set_prompt(self, new_prompt: str):
         logging.info(f"Assistant prompt updated to: {new_prompt}")
