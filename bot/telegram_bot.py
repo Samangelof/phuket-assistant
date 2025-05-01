@@ -6,7 +6,8 @@ import os
 import io
 
 from uuid import uuid4
-from telegram import BotCommandScopeAllGroupChats, Update, constants
+
+from telegram import BotCommandScopeAllGroupChats, Update, constants, ReplyKeyboardMarkup
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle
 from telegram import InputTextMessageContent, BotCommand
 from telegram.error import RetryAfter, TimedOut, BadRequest
@@ -70,6 +71,7 @@ class ChatGPTTelegramBot:
         # if self.config.get('enable_tts_generation', False):
         #     self.commands.append(BotCommand(
         #         command='tts', description=localized_text('tts_description', bot_language)))
+        self.user_keyboard = self._create_user_keyboard(bot_language)
 
         self.group_commands = [BotCommand(
             command='chat', description=localized_text('chat_description', bot_language)
@@ -105,6 +107,31 @@ class ChatGPTTelegramBot:
         self.daily_requests[user_id].append(now)
         return False
     
+    
+    def _create_user_keyboard(self, bot_language):
+        """Создаёт постоянное меню с кнопками для пользователя."""
+        # keyboard = [
+        #     ["Начать путешествие!", "📊 Статистика"],
+        #     ["♻️ Повторить", "❓ Помощь"]
+        # ]
+        keyboard = [
+            ["Начать путешествие!"]
+        ]
+        return ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+            is_persistent=True,  # <- Вот это делает кнопки всегда видимыми
+            one_time_keyboard=False  # <- Это запрещает скрытие после нажатия
+        )
+    
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        keyboard = [
+            [InlineKeyboardButton("Продажа недвижимости на Пхукете", url="https://t.me/PhuketDaexpert")],
+            [InlineKeyboardButton("Авто на Пхукете", url="https://t.me/RentaCarPhuke")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text('Привет! Подпишись на наши каналы:', reply_markup=reply_markup)
+        
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
@@ -130,7 +157,7 @@ class ChatGPTTelegramBot:
         help_text += '\n\n' + localized_text('help_text', bot_language)[1]
         help_text += '\n\n' + localized_text('help_text', bot_language)[2]
 
-        await update.message.reply_text(help_text, disable_web_page_preview=True)
+        await update.message.reply_text(help_text, disable_web_page_preview=True, reply_markup=self.user_keyboard)
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -274,7 +301,7 @@ class ChatGPTTelegramBot:
         with update.message._unfrozen() as message:
             message.text = self.last_message.pop(chat_id)
 
-        await self.prompt(update=update, context=context)
+        await self.prompt(update=update, context=context, reply_markup=self.user_keyboard)
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -789,10 +816,10 @@ class ChatGPTTelegramBot:
                 # Проверка лимитов для групповых чатов остается как есть
                 user_id = update.message.from_user.id
                 if self.is_rate_limited(user_id):
-                    await update.message.reply_text("Слишком часто. Подожди немного.")
+                    await update.message.reply_text("Слишком часто. Подожди немного.", reply_markup=self.user_keyboard)
                     return
                 if self.is_daily_limited(user_id):
-                    await update.message.reply_text("Вы превысили лимит запросов на сегодня.")
+                    await update.message.reply_text("Вы превысили лимит запросов на сегодня.", reply_markup=self.user_keyboard)
                     return
             else:
                 # Сообщение не содержит триггерных слов
@@ -802,11 +829,11 @@ class ChatGPTTelegramBot:
             # Новый код для личных сообщений
             # Проверка лимитов для личных чатов
             if self.is_rate_limited(user_id):
-                await update.message.reply_text("Слишком часто. Подожди немного.")
+                await update.message.reply_text("Слишком часто. Подожди немного.", reply_markup=self.user_keyboard)
                 return
             
             if self.is_daily_limited(user_id):
-                await update.message.reply_text("Вы превысили лимит запросов на сегодня.")
+                await update.message.reply_text("Вы превысили лимит запросов на сегодня.", reply_markup=self.user_keyboard)
                 return
 
 
@@ -916,7 +943,8 @@ class ChatGPTTelegramBot:
                                 reply_to_message_id=get_reply_to_message_id(self.config,
                                                                             update) if index == 0 else None,
                                 text=chunk,
-                                parse_mode=constants.ParseMode.MARKDOWN
+                                parse_mode=constants.ParseMode.MARKDOWN,
+                                reply_markup=self.user_keyboard
                             )
                         except Exception:
                             try:
@@ -1410,12 +1438,12 @@ class ChatGPTTelegramBot:
             .concurrent_updates(True) \
             .build()
         
-        application.add_handler(CommandHandler('addprompt', self.add_prompt))
-        application.add_handler(CommandHandler("prompts", self.list_prompts))
-        application.add_handler(CommandHandler('setprompt', self.set_prompt))
+        # application.add_handler(CommandHandler('addprompt', self.add_prompt))
+        # application.add_handler(CommandHandler("prompts", self.list_prompts))
+        # application.add_handler(CommandHandler('setprompt', self.set_prompt))
         # application.add_handler(CommandHandler("editprompt", self.edit_prompt))
-        application.add_handler(CommandHandler("viewprompt", self.view_prompt))
-        application.add_handler(CommandHandler("delprompt", self.delete_prompt))
+        # application.add_handler(CommandHandler("viewprompt", self.view_prompt))
+        # application.add_handler(CommandHandler("delprompt", self.delete_prompt))
 
 
         # Регистрация
@@ -1439,7 +1467,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('help', self.help))
         # application.add_handler(CommandHandler('image', self.image))
         # application.add_handler(CommandHandler('tts', self.tts))
-        application.add_handler(CommandHandler('start', self.help))
+        application.add_handler(CommandHandler('start', self.start))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))
         application.add_handler(CommandHandler(

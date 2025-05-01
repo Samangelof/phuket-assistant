@@ -2,7 +2,8 @@ import logging
 import os
 from dotenv import load_dotenv
 from plugin_manager import PluginManager
-from openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
+# from openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
+from assistant_helper import AssistantHelper
 from telegram_bot import ChatGPTTelegramBot
 from utils import prompts
 
@@ -28,11 +29,20 @@ def main():
 
     # Setup configurations
     model = os.environ.get('OPENAI_MODEL', 'gpt-4o')
-    functions_available = are_functions_available(model=model)
-    max_tokens_default = default_max_tokens(model=model)
+    # functions_available = are_functions_available(model=model)
+    # max_tokens_default = default_max_tokens(model=model)
 
 
 
+    assistant_config = {
+        'api_key': os.environ['OPENAI_API_KEY'],
+        'assistant_id': os.environ['OPENAI_ASSISTANT_ID'],
+        'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
+        'stream': os.environ.get('STREAM', 'true').lower() == 'true',
+        'proxy': os.environ.get('PROXY', None) or os.environ.get('OPENAI_PROXY', None),
+        'max_conversation_age_minutes': int(os.environ.get('MAX_CONVERSATION_AGE_MINUTES', 180)),
+        'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+    }
 
     openai_config = {
         'api_key': os.environ['OPENAI_API_KEY'],
@@ -49,7 +59,7 @@ def main():
         'assistant_prompt': prompts["__active__"],
 
 
-        'max_tokens': int(os.environ.get('MAX_TOKENS', max_tokens_default)),
+        # 'max_tokens': int(os.environ.get('MAX_TOKENS', max_tokens_default)),
         'n_choices': int(os.environ.get('N_CHOICES', 1)),
         'temperature': float(os.environ.get('TEMPERATURE', 1.0)),
         # 'image_model': os.environ.get('IMAGE_MODEL', 'dall-e-2'),
@@ -57,7 +67,7 @@ def main():
         # 'image_style': os.environ.get('IMAGE_STYLE', 'vivid'),
         # 'image_size': os.environ.get('IMAGE_SIZE', '512x512'),
         'model': model,
-        'enable_functions': os.environ.get('ENABLE_FUNCTIONS', str(functions_available)).lower() == 'true',
+        # 'enable_functions': os.environ.get('ENABLE_FUNCTIONS', str(functions_available)).lower() == 'true',
         'functions_max_consecutive_calls': int(os.environ.get('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10)),
         'presence_penalty': float(os.environ.get('PRESENCE_PENALTY', 0.0)),
         'frequency_penalty': float(os.environ.get('FREQUENCY_PENALTY', 0.0)),
@@ -74,10 +84,10 @@ def main():
     }
     logging.info(openai_config['assistant_prompt'])
 
-    if openai_config['enable_functions'] and not functions_available:
-        logging.error(f'ENABLE_FUNCTIONS is set to true, but the model {model} does not support it. '
-                        'Please set ENABLE_FUNCTIONS to false or use a model that supports it.')
-        exit(1)
+    # if openai_config['enable_functions'] and not functions_available:
+    #     logging.error(f'ENABLE_FUNCTIONS is set to true, but the model {model} does not support it. '
+    #                     'Please set ENABLE_FUNCTIONS to false or use a model that supports it.')
+    #     exit(1)
     if os.environ.get('MONTHLY_USER_BUDGETS') is not None:
         logging.warning('The environment variable MONTHLY_USER_BUDGETS is deprecated. '
                         'Please use USER_BUDGETS with BUDGET_PERIOD instead.')
@@ -118,11 +128,13 @@ def main():
     plugin_config = {
         'plugins': os.environ.get('PLUGINS', '').split(',')
     }
-
+    
     # Setup and run ChatGPT and Telegram bot
     plugin_manager = PluginManager(config=plugin_config)
-    openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper)
+    # Создаем помощника, используя Assistant API вместо Chat Completions API
+    assistant_helper = AssistantHelper(config=assistant_config, plugin_manager=plugin_manager)
+    # openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager)
+    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=assistant_helper)
     telegram_bot.run()
 
 
